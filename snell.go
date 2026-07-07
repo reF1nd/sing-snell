@@ -52,6 +52,13 @@ var (
 	ErrDuplicateUserKey   = E.New("snell: duplicate user key")
 )
 
+type MultiUserAuthentication uint8
+
+const (
+	MultiUserAuthenticationUserKey MultiUserAuthentication = iota
+	MultiUserAuthenticationPSK
+)
+
 type Method interface {
 	DialConn(conn net.Conn, destination M.Socksaddr) (net.Conn, error)
 	DialEarlyConn(conn net.Conn, destination M.Socksaddr) net.Conn

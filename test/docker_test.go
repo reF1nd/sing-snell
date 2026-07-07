@@ -35,7 +35,7 @@ type binarySpec struct {
 var binaries = map[string]binarySpec{
 	"v4": {tag: "v4.1.1", sha256: "8e02974916645aafc0521c49faf0ab9916a0a8a7922ae7261cfd74b96899d25a"},
 	"v5": {tag: "v5.0.1", sha256: "5b2e221f2c6e29b1db8e47053e1221be29d5627da807cb932b089f514a3609f0"},
-	"v6": {tag: "v6.0.0rc", sha256: "02fa15ac1e18cde6a3e072eeb5d15328c7fd759dbefb1e77e33891a71a1202ae"},
+	"v6": {tag: "v6.0.0rc2", sha256: "27d8bead8dd7a33f2207b58c7bb6b4c274f67f537b621dcbee7112ffd22e23e6"},
 }
 
 func cacheDir() string {

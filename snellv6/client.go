@@ -41,6 +41,9 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if len(options.PSK) == 0 {
 		return nil, snell.ErrMissingPSK
 	}
+	if len(options.PSK) < 12 || len(options.PSK) > 255 {
+		return nil, E.New("snell: psk length must be between 12 and 255 bytes")
+	}
 	if len(options.UserKey) > 255 {
 		return nil, E.New("snell: user key too long")
 	}

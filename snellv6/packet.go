@@ -113,7 +113,8 @@ func (c *clientPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksad
 func (c *clientPacketConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
 	upstreamWriter, created := bufio.CreateVectorisedWriter(c.Conn)
 	if !created {
-		return nil, false
+		// Hide the creator to avoid recursion while preserving batch reads upstream.
+		return bufio.NewPacketBatchWriter(struct{ N.PacketWriter }{c}), true
 	}
 	return &clientPacketBatchWriter{conn: c, upstream: upstreamWriter}, true
 }
@@ -316,7 +317,8 @@ func (c *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksad
 func (c *serverPacketConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
 	upstreamWriter, created := bufio.CreateVectorisedWriter(c.Conn)
 	if !created {
-		return nil, false
+		// Hide the creator to avoid recursion while preserving batch reads upstream.
+		return bufio.NewPacketBatchWriter(struct{ N.PacketWriter }{c}), true
 	}
 	return &serverPacketBatchWriter{conn: c, upstream: upstreamWriter}, true
 }

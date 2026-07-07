@@ -34,6 +34,17 @@ const (
 	v6UDPTestPayloadSize = 1400
 )
 
+func TestV6ClientPSKLength(t *testing.T) {
+	for _, size := range []int{0, 11, 256} {
+		_, err := snellv6.NewClient(snellv6.ClientOptions{PSK: make([]byte, size)})
+		require.Error(t, err)
+	}
+	for _, size := range []int{12, 255} {
+		_, err := snellv6.NewClient(snellv6.ClientOptions{PSK: make([]byte, size)})
+		require.NoError(t, err)
+	}
+}
+
 func TestV6TCP(t *testing.T) {
 	for name, mode := range v6Modes {
 		t.Run(name, func(t *testing.T) {
