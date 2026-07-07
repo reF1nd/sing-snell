@@ -596,12 +596,12 @@ func (c *reuseConn) RemoteAddr() net.Addr {
 }
 
 var (
-	_ N.ExtendedConn           = (*reuseConn)(nil)
-	_ N.ReadWaitCreator        = (*reuseConn)(nil)
-	_ N.VectorisedWriteCreator = (*reuseConn)(nil)
-	_ N.EarlyReader            = (*reuseConn)(nil)
-	_ N.EarlyWriter            = (*reuseConn)(nil)
-	_ N.WriteCloser            = (*reuseConn)(nil)
-	_ N.VectorisedWriter       = (*reuseVectorisedWriter)(nil)
-	_ N.ReadWaiter             = (*reuseReadWaiter)(nil)
+	_ N.ExtendedConn               = (*reuseConn)(nil)
+	_ N.ReadWaitCreator            = (*reuseConn)(nil)
+	_ snell.VectorisedWriteCreator = (*reuseConn)(nil)
+	_ snell.EarlyReader            = (*reuseConn)(nil)
+	_ snell.EarlyWriter            = (*reuseConn)(nil)
+	_ N.WriteCloser                = (*reuseConn)(nil)
+	_ N.VectorisedWriter           = (*reuseVectorisedWriter)(nil)
+	_ N.ReadWaiter                 = (*reuseReadWaiter)(nil)
 )

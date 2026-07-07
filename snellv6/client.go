@@ -41,6 +41,9 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if len(options.PSK) == 0 {
 		return nil, snell.ErrMissingPSK
 	}
+	if len(options.PSK) < 12 || len(options.PSK) > 255 {
+		return nil, E.New("snell: psk length must be between 12 and 255 bytes")
+	}
 	if len(options.UserKey) > 255 {
 		return nil, E.New("snell: user key too long")
 	}
@@ -350,12 +353,12 @@ func (c *clientConn) RemoteAddr() net.Addr {
 }
 
 var (
-	_ N.ExtendedConn           = (*clientConn)(nil)
-	_ N.ReadWaiter             = (*clientConn)(nil)
-	_ N.ReadWaitCreator        = (*clientConn)(nil)
-	_ N.VectorisedWriteCreator = (*clientConn)(nil)
-	_ N.VectorisedWriter       = (*clientVectorisedWriter)(nil)
-	_ N.EarlyReader            = (*clientConn)(nil)
-	_ N.EarlyWriter            = (*clientConn)(nil)
-	_ N.WriteCloser            = (*clientConn)(nil)
+	_ N.ExtendedConn               = (*clientConn)(nil)
+	_ N.ReadWaiter                 = (*clientConn)(nil)
+	_ N.ReadWaitCreator            = (*clientConn)(nil)
+	_ snell.VectorisedWriteCreator = (*clientConn)(nil)
+	_ N.VectorisedWriter           = (*clientVectorisedWriter)(nil)
+	_ snell.EarlyReader            = (*clientConn)(nil)
+	_ snell.EarlyWriter            = (*clientConn)(nil)
+	_ N.WriteCloser                = (*clientConn)(nil)
 )

@@ -155,12 +155,20 @@ func (c *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksad
 	return recordWriter.WritePacketBuffer(buffer)
 }
 
-func (c *serverPacketConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
+func (c *serverPacketConn) CreatePacketBatchWriter() (snell.PacketBatchWriter, bool) {
 	upstreamWriter, created := bufio.CreateVectorisedWriter(c.Conn)
 	if !created {
 		return nil, false
 	}
 	return &serverPacketBatchWriter{conn: c, upstream: upstreamWriter}, true
+}
+
+func (c *serverPacketConn) WritePacketBatch(buffers []*buf.Buffer, destinations []M.Socksaddr) error {
+	writer, created := c.CreatePacketBatchWriter()
+	if !created {
+		return snell.WritePacketBatchFallback(c, buffers, destinations)
+	}
+	return writer.WritePacketBatch(buffers, destinations)
 }
 
 type serverPacketBatchWriter struct {
@@ -281,9 +289,10 @@ func (c *serverPacketConn) WaitReadPacket() (*buf.Buffer, M.Socksaddr, error) {
 }
 
 var (
-	_ N.PacketConn              = (*serverPacketConn)(nil)
-	_ N.PacketReadWaiter        = (*serverPacketConn)(nil)
-	_ N.PacketBatchWriteCreator = (*serverPacketConn)(nil)
-	_ N.WriterWithMTU           = (*serverPacketConn)(nil)
-	_ N.PacketBatchWriter       = (*serverPacketBatchWriter)(nil)
+	_ N.PacketConn                  = (*serverPacketConn)(nil)
+	_ N.PacketReadWaiter            = (*serverPacketConn)(nil)
+	_ snell.PacketBatchWriteCreator = (*serverPacketConn)(nil)
+	_ snell.PacketBatchWriter       = (*serverPacketConn)(nil)
+	_ N.WriterWithMTU               = (*serverPacketConn)(nil)
+	_ snell.PacketBatchWriter       = (*serverPacketBatchWriter)(nil)
 )

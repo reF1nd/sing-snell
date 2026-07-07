@@ -1,12 +1,16 @@
 package snellv6
 
 import (
+	"bytes"
 	"context"
+	"crypto/cipher"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	snell "github.com/sagernet/sing-snell"
+	"github.com/sagernet/sing-snell/internal/multiuser"
 	"github.com/sagernet/sing-snell/internal/reuse"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
@@ -24,9 +28,10 @@ type Service struct {
 }
 
 type ServerOptions struct {
-	PSK     []byte
-	Mode    Mode
-	Handler snell.Handler
+	PSK                     []byte
+	Mode                    Mode
+	Handler                 snell.Handler
+	MultiUserAuthentication snell.MultiUserAuthentication
 }
 
 func NewService(options ServerOptions) (*Service, error) {
@@ -57,17 +62,46 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
 
 type MultiService[U comparable] struct {
 	*Service
-	users map[string]U
+	state          atomic.Pointer[multiUserState[U]]
+	authentication snell.MultiUserAuthentication
+}
+
+type multiUserState[U comparable] struct {
+	users            map[string]U
+	pskUsers         []U
+	pskAuthenticator *multiuser.Authenticator
+	pskProfiles      map[string]*Profile
+	pskHeadLen       int
 }
 
 var errInvalidUDPTunnelRequest = E.New("snell: invalid udp tunnel request")
 
 func NewMultiService[U comparable](options ServerOptions) (*MultiService[U], error) {
+	if options.MultiUserAuthentication != snell.MultiUserAuthenticationUserKey && options.MultiUserAuthentication != snell.MultiUserAuthenticationPSK {
+		return nil, E.New("snell: unknown multi-user authentication mode: ", int(options.MultiUserAuthentication))
+	}
+	if options.MultiUserAuthentication == snell.MultiUserAuthenticationPSK {
+		if len(options.PSK) != 0 {
+			return nil, E.New("snell: shared psk is not allowed with psk multi-user authentication")
+		}
+		if options.Mode == ModeUnsafeRaw {
+			return nil, E.New("snell: psk multi-user authentication is unavailable in unsafe-raw mode")
+		}
+		if options.Mode != ModeDefault && options.Mode != ModeUnshaped {
+			return nil, E.New("snell: unknown v6 mode: ", int(options.Mode))
+		}
+		return &MultiService[U]{
+			Service:        &Service{mode: options.Mode, handler: options.Handler},
+			authentication: options.MultiUserAuthentication,
+		}, nil
+	}
 	service, err := NewService(options)
 	if err != nil {
 		return nil, err
 	}
-	return &MultiService[U]{Service: service, users: make(map[string]U)}, nil
+	multiService := &MultiService[U]{Service: service}
+	multiService.state.Store(&multiUserState[U]{users: make(map[string]U)})
+	return multiService, nil
 }
 
 func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
@@ -76,6 +110,37 @@ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
 	}
 	if len(users) == 0 {
 		return snell.ErrNoUsers
+	}
+	if s.authentication == snell.MultiUserAuthenticationPSK {
+		credentialSet := make(map[string]struct{}, len(users))
+		for _, credential := range userKeys {
+			if len(credential) < 12 || len(credential) > 255 {
+				return E.New("snell: user psk length must be between 12 and 255 bytes")
+			}
+			key := string(credential)
+			if _, loaded := credentialSet[key]; loaded {
+				return E.New("snell: duplicate user psk")
+			}
+			credentialSet[key] = struct{}{}
+		}
+		pskHeadLen := snell.SaltLen + snell.HeaderCipherLen
+		var pskProfiles map[string]*Profile
+		if s.mode == ModeDefault {
+			pskProfiles = make(map[string]*Profile, len(userKeys))
+			for _, credential := range userKeys {
+				profile := NewProfile(credential)
+				pskProfiles[string(credential)] = profile
+				candidateLen := profile.saltBlockLen + profile.recordPrefixLen(0) + snell.HeaderCipherLen
+				pskHeadLen = max(pskHeadLen, candidateLen)
+			}
+		}
+		s.state.Store(&multiUserState[U]{
+			pskUsers:         append([]U(nil), users...),
+			pskAuthenticator: multiuser.New(userKeys),
+			pskProfiles:      pskProfiles,
+			pskHeadLen:       pskHeadLen,
+		})
+		return nil
 	}
 	userMap := make(map[string]U, len(users))
 	for index, user := range users {
@@ -92,20 +157,160 @@ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
 		}
 		userMap[keyString] = user
 	}
-	s.users = userMap
+	s.state.Store(&multiUserState[U]{users: userMap})
 	return nil
 }
 
 func (s *MultiService[U]) NewConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
-	err := s.newConnection(ctx, conn, source, onClose)
+	var err error
+	if s.authentication == snell.MultiUserAuthenticationPSK {
+		err = s.newPSKConnection(ctx, conn, source, onClose)
+	} else {
+		err = s.newConnection(ctx, conn, source, onClose)
+	}
 	if err != nil {
 		return &snell.ServerError{Conn: conn, Source: source, Cause: err}
 	}
 	return nil
 }
 
+func (s *MultiService[U]) newPSKConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
+	state := s.state.Load()
+	if state == nil || state.pskAuthenticator == nil {
+		return snell.ErrNoUsers
+	}
+	head := make([]byte, state.pskHeadLen)
+	_, err := io.ReadFull(conn, head)
+	if err != nil {
+		return err
+	}
+	type pskMatch struct {
+		aead    cipher.AEAD
+		profile *Profile
+	}
+	matchedPSK, userIndex, matched, err := multiuser.AuthenticateWithResult(state.pskAuthenticator, func(psk []byte) (pskMatch, bool) {
+		var aead cipher.AEAD
+		var createErr error
+		var headerCipher []byte
+		var additionalData []byte
+		var profile *Profile
+		if s.mode == ModeUnshaped {
+			salt := head[:snell.SaltLen]
+			aead, createErr = snell.NewAEAD(snell.DeriveKey(psk, salt))
+			headerCipher = head[snell.SaltLen : snell.SaltLen+snell.HeaderCipherLen]
+		} else {
+			profile = state.pskProfiles[string(psk)]
+			block := head[:profile.saltBlockLen]
+			salt := profile.extractSalt(block)
+			aead, createErr = snell.NewAEAD(snell.DeriveKey(psk, salt[:]))
+			prefixStart := profile.saltBlockLen
+			prefixEnd := prefixStart + profile.recordPrefixLen(0)
+			additionalData = head[prefixStart:prefixEnd]
+			headerCipher = head[prefixEnd : prefixEnd+snell.HeaderCipherLen]
+		}
+		if createErr != nil {
+			return pskMatch{}, false
+		}
+		header := append([]byte(nil), headerCipher...)
+		plain, openErr := aead.Open(header[:0], make([]byte, snell.NonceLen), header, additionalData)
+		if openErr != nil || len(plain) != snell.HeaderPlainLen || plain[0] != snell.HeaderVersion {
+			return pskMatch{}, false
+		}
+		return pskMatch{aead: aead, profile: profile}, true
+	})
+	if err != nil {
+		return err
+	}
+	reader, record, err := readAuthenticatedFirstRecord(conn, s.mode, matchedPSK, matched.profile, matched.aead, head, N.ReadWaitOptions{})
+	if err != nil {
+		return E.Cause(err, "read request")
+	}
+	request, err := s.readRequest(record)
+	if err != nil {
+		record.Release()
+		return E.Cause(err, "decode request")
+	}
+	requestCtx := auth.ContextWithUser(ctx, state.pskUsers[userIndex])
+	matchedService := &Service{psk: matchedPSK, mode: s.mode, profile: matched.profile, handler: s.handler}
+	switch request.Command {
+	case snell.CommandConnect:
+		serverConn := &serverConn{Conn: conn, service: matchedService, reader: reader}
+		if record.IsEmpty() {
+			record.Release()
+		} else {
+			reader.SetCache(record)
+		}
+		s.handler.NewConnectionEx(requestCtx, serverConn, source, request.Destination, onClose)
+		return nil
+	case snell.CommandConnectV2:
+		reuseSession := &serverReuseSession[struct{}]{Conn: conn, service: matchedService, reader: reader}
+		return reuseSession.Serve(requestCtx, source, onClose, record, request)
+	case snell.CommandUDP:
+		if !record.IsEmpty() {
+			record.Release()
+			conn.Close()
+			return errInvalidUDPTunnelRequest
+		}
+		record.Release()
+		packetConn := &serverPacketConn{Conn: conn, service: matchedService, reader: reader}
+		if err = packetConn.writeTunnelReply(); err != nil {
+			return err
+		}
+		s.handler.NewPacketConnectionEx(requestCtx, packetConn, source, M.Socksaddr{}, onClose)
+		return nil
+	case snell.CommandPing:
+		record.Release()
+		pong := [1]byte{snell.ReplyPong}
+		_, err = writeFirstRecord(conn, s.mode, matchedPSK, matched.profile, pong[:])
+		closeErr := conn.Close()
+		if err != nil {
+			return err
+		}
+		return closeErr
+	default:
+		record.Release()
+		return E.Extend(snell.ErrUnsupportedCommand, request.Command)
+	}
+}
+
+func readAuthenticatedFirstRecord(
+	conn io.Reader,
+	mode Mode,
+	psk []byte,
+	profile *Profile,
+	aead cipher.AEAD,
+	head []byte,
+	readWaitOptions N.ReadWaitOptions,
+) (reuse.RecordReader, *buf.Buffer, error) {
+	switch mode {
+	case ModeUnshaped:
+		reader := newUnshapedReader(io.MultiReader(bytes.NewReader(head[snell.SaltLen:]), conn), aead, make([]byte, snell.NonceLen))
+		reader.InitializeReadWaiter(readWaitOptions)
+		record, err := reader.ReadRecord()
+		if err != nil {
+			return nil, nil, err
+		}
+		return reader, record, nil
+	case ModeDefault:
+		reader := newShapedReader(io.MultiReader(bytes.NewReader(head[profile.saltBlockLen:]), conn), psk, profile)
+		reader.cipher = aead
+		reader.InitializeReadWaiter(readWaitOptions)
+		record, err := reader.ReadRecord()
+		if err != nil {
+			return nil, nil, err
+		}
+		return reader, record, nil
+	default:
+		panic("snell: invalid authenticated v6 mode")
+	}
+}
+
 func (s *MultiService[U]) authenticate(ctx context.Context, request snell.Request) (context.Context, error) {
-	user, loaded := s.users[string(request.ClientID)]
+	state := s.state.Load()
+	if state == nil {
+		return nil, snell.ErrNoUsers
+	}
+	user, loaded := state.users[string(request.ClientID)]
 	if !loaded {
 		return nil, snell.ErrBadUserKey
 	}
@@ -455,9 +660,9 @@ func (c *serverConn) Upstream() any {
 }
 
 var (
-	_ N.ExtendedConn           = (*serverConn)(nil)
-	_ N.ReadWaiter             = (*serverConn)(nil)
-	_ N.VectorisedWriteCreator = (*serverConn)(nil)
-	_ N.VectorisedWriter       = (*serverVectorisedWriter)(nil)
-	_ N.WriteCloser            = (*serverConn)(nil)
+	_ N.ExtendedConn               = (*serverConn)(nil)
+	_ N.ReadWaiter                 = (*serverConn)(nil)
+	_ snell.VectorisedWriteCreator = (*serverConn)(nil)
+	_ N.VectorisedWriter           = (*serverVectorisedWriter)(nil)
+	_ N.WriteCloser                = (*serverConn)(nil)
 )

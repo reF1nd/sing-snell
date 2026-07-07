@@ -174,7 +174,7 @@ func (r *unshapedReader) read() (*buf.Buffer, error) {
 	if payloadLen == 0 {
 		return nil, io.EOF
 	}
-	body := r.readWaitOptions.NewBufferSize(payloadLen + snell.AEADTagLen)
+	body := snell.NewReadWaitBuffer(r.readWaitOptions, payloadLen+snell.AEADTagLen)
 	_, err = body.ReadFullFrom(r.upstream, payloadLen+snell.AEADTagLen)
 	if err != nil {
 		body.Release()
@@ -436,7 +436,7 @@ func (r *rawReader) read() (*buf.Buffer, error) {
 	if payloadLen == 0 {
 		return nil, io.EOF
 	}
-	body := r.readWaitOptions.NewBufferSize(payloadLen)
+	body := snell.NewReadWaitBuffer(r.readWaitOptions, payloadLen)
 	_, err = body.ReadFullFrom(r.upstream, payloadLen)
 	if err != nil {
 		body.Release()
@@ -634,21 +634,21 @@ func (w *rawWriter) Upstream() any {
 }
 
 var (
-	_ N.ExtendedReader         = (*unshapedReader)(nil)
-	_ N.ReadWaiter             = (*unshapedReader)(nil)
-	_ N.ExtendedWriter         = (*unshapedWriter)(nil)
-	_ N.VectorisedWriteCreator = (*unshapedWriter)(nil)
-	_ N.VectorisedWriter       = (*vectorisedUnshapedWriter)(nil)
-	_ N.VectorisedWriter       = (*packetVectorisedUnshapedWriter)(nil)
-	_ N.FrontHeadroom          = (*unshapedWriter)(nil)
-	_ N.ExtendedReader         = (*rawReader)(nil)
-	_ N.ReadWaiter             = (*rawReader)(nil)
-	_ N.ExtendedWriter         = (*rawWriter)(nil)
-	_ N.VectorisedWriteCreator = (*rawWriter)(nil)
-	_ N.VectorisedWriter       = (*vectorisedRawWriter)(nil)
-	_ N.VectorisedWriter       = (*packetVectorisedRawWriter)(nil)
-	_ N.VectorisedWriteCreator = (*shapedWriter)(nil)
-	_ N.WriterWithMTU          = (*unshapedWriter)(nil)
-	_ N.WriterWithMTU          = (*rawWriter)(nil)
-	_ N.WriterWithMTU          = (*shapedWriter)(nil)
+	_ N.ExtendedReader             = (*unshapedReader)(nil)
+	_ N.ReadWaiter                 = (*unshapedReader)(nil)
+	_ N.ExtendedWriter             = (*unshapedWriter)(nil)
+	_ snell.VectorisedWriteCreator = (*unshapedWriter)(nil)
+	_ N.VectorisedWriter           = (*vectorisedUnshapedWriter)(nil)
+	_ N.VectorisedWriter           = (*packetVectorisedUnshapedWriter)(nil)
+	_ N.FrontHeadroom              = (*unshapedWriter)(nil)
+	_ N.ExtendedReader             = (*rawReader)(nil)
+	_ N.ReadWaiter                 = (*rawReader)(nil)
+	_ N.ExtendedWriter             = (*rawWriter)(nil)
+	_ snell.VectorisedWriteCreator = (*rawWriter)(nil)
+	_ N.VectorisedWriter           = (*vectorisedRawWriter)(nil)
+	_ N.VectorisedWriter           = (*packetVectorisedRawWriter)(nil)
+	_ snell.VectorisedWriteCreator = (*shapedWriter)(nil)
+	_ N.WriterWithMTU              = (*unshapedWriter)(nil)
+	_ N.WriterWithMTU              = (*rawWriter)(nil)
+	_ N.WriterWithMTU              = (*shapedWriter)(nil)
 )

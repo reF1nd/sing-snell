@@ -432,7 +432,7 @@ func (r *shapedReader) read() (*buf.Buffer, error) {
 			return nil, err
 		}
 	}
-	body := r.readWaitOptions.NewBufferSize(payloadLen + snell.AEADTagLen)
+	body := snell.NewReadWaitBuffer(r.readWaitOptions, payloadLen+snell.AEADTagLen)
 	_, err = body.ReadFullFrom(r.upstream, payloadLen+snell.AEADTagLen)
 	if err != nil {
 		if padding != nil {

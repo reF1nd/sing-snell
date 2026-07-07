@@ -325,12 +325,12 @@ func (c *clientConn) RemoteAddr() net.Addr {
 }
 
 var (
-	_ N.ExtendedConn           = (*clientConn)(nil)
-	_ N.ReadWaiter             = (*clientConn)(nil)
-	_ N.ReadWaitCreator        = (*clientConn)(nil)
-	_ N.VectorisedWriteCreator = (*clientConn)(nil)
-	_ N.VectorisedWriter       = (*clientVectorisedWriter)(nil)
-	_ N.EarlyReader            = (*clientConn)(nil)
-	_ N.EarlyWriter            = (*clientConn)(nil)
-	_ N.WriteCloser            = (*clientConn)(nil)
+	_ N.ExtendedConn               = (*clientConn)(nil)
+	_ N.ReadWaiter                 = (*clientConn)(nil)
+	_ N.ReadWaitCreator            = (*clientConn)(nil)
+	_ snell.VectorisedWriteCreator = (*clientConn)(nil)
+	_ N.VectorisedWriter           = (*clientVectorisedWriter)(nil)
+	_ snell.EarlyReader            = (*clientConn)(nil)
+	_ snell.EarlyWriter            = (*clientConn)(nil)
+	_ N.WriteCloser                = (*clientConn)(nil)
 )

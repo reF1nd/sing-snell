@@ -3,7 +3,9 @@ package snell
 import (
 	"context"
 	"net"
+	"os"
 
+	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -52,10 +54,66 @@ var (
 	ErrDuplicateUserKey   = E.New("snell: duplicate user key")
 )
 
+type MultiUserAuthentication uint8
+
+const (
+	MultiUserAuthenticationUserKey MultiUserAuthentication = iota
+	MultiUserAuthenticationPSK
+)
+
 type Method interface {
 	DialConn(conn net.Conn, destination M.Socksaddr) (net.Conn, error)
 	DialEarlyConn(conn net.Conn, destination M.Socksaddr) net.Conn
 	DialPacketConn(conn net.Conn) (N.NetPacketConn, error)
+}
+
+// VectorisedWriteCreator is kept local so sing-snell remains compatible with
+// sing versions predating common/network.VectorisedWriteCreator.
+type VectorisedWriteCreator interface {
+	CreateVectorisedWriter() (N.VectorisedWriter, bool)
+}
+
+type EarlyReader interface {
+	NeedHandshakeForRead() bool
+}
+
+type EarlyWriter interface {
+	NeedHandshakeForWrite() bool
+}
+
+type PacketBatchWriter interface {
+	WritePacketBatch(buffers []*buf.Buffer, destinations []M.Socksaddr) error
+}
+
+type PacketBatchWriteCreator interface {
+	CreatePacketBatchWriter() (PacketBatchWriter, bool)
+}
+
+func WritePacketBatchFallback(writer N.PacketWriter, buffers []*buf.Buffer, destinations []M.Socksaddr) error {
+	if len(buffers) == 0 || len(buffers) != len(destinations) {
+		buf.ReleaseMulti(buffers)
+		return os.ErrInvalid
+	}
+	for index, buffer := range buffers {
+		if err := writer.WritePacket(buffer, destinations[index]); err != nil {
+			buf.ReleaseMulti(buffers[index+1:])
+			return err
+		}
+	}
+	return nil
+}
+
+// NewReadWaitBuffer backports ReadWaitOptions.NewBufferSize from newer sing.
+func NewReadWaitBuffer(options N.ReadWaitOptions, bufferSize int) *buf.Buffer {
+	bufferSize += options.FrontHeadroom + options.RearHeadroom
+	buffer := buf.NewSize(bufferSize)
+	if options.FrontHeadroom > 0 {
+		buffer.Resize(options.FrontHeadroom, 0)
+	}
+	if options.RearHeadroom > 0 {
+		buffer.Reserve(options.RearHeadroom)
+	}
+	return buffer
 }
 
 type Handler interface {

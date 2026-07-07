@@ -1,15 +1,19 @@
 package snellv5
 
 import (
+	"bytes"
 	"context"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
 	"io"
 	"math"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	snell "github.com/sagernet/sing-snell"
+	"github.com/sagernet/sing-snell/internal/multiuser"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
@@ -139,9 +143,10 @@ type Service struct {
 }
 
 type ServiceOptions struct {
-	PSK      []byte
-	ObfsMode snell.ObfsMode
-	Handler  snell.Handler
+	PSK                     []byte
+	ObfsMode                snell.ObfsMode
+	Handler                 snell.Handler
+	MultiUserAuthentication snell.MultiUserAuthentication
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
@@ -171,15 +176,41 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
 
 type MultiService[U comparable] struct {
 	*Service
-	users map[string]U
+	state          atomic.Pointer[multiUserState[U]]
+	authentication snell.MultiUserAuthentication
+}
+
+type multiUserState[U comparable] struct {
+	users            map[string]U
+	pskUsers         []U
+	pskAuthenticator *multiuser.Authenticator
 }
 
 func NewMultiService[U comparable](options ServiceOptions) (*MultiService[U], error) {
+	if options.MultiUserAuthentication != snell.MultiUserAuthenticationUserKey && options.MultiUserAuthentication != snell.MultiUserAuthenticationPSK {
+		return nil, E.New("snell: unknown multi-user authentication mode: ", int(options.MultiUserAuthentication))
+	}
+	if options.MultiUserAuthentication == snell.MultiUserAuthenticationPSK {
+		if len(options.PSK) != 0 {
+			return nil, E.New("snell: shared psk is not allowed with psk multi-user authentication")
+		}
+		switch options.ObfsMode {
+		case snell.ObfsModeNone, snell.ObfsModeHTTP, snell.ObfsModeTLS:
+		default:
+			return nil, E.New("snell: unknown obfs mode: ", int(options.ObfsMode))
+		}
+		return &MultiService[U]{
+			Service:        &Service{obfs: snell.ObfsConfig{Mode: options.ObfsMode}, handler: options.Handler},
+			authentication: options.MultiUserAuthentication,
+		}, nil
+	}
 	service, err := NewService(options)
 	if err != nil {
 		return nil, err
 	}
-	return &MultiService[U]{Service: service, users: make(map[string]U)}, nil
+	multiService := &MultiService[U]{Service: service}
+	multiService.state.Store(&multiUserState[U]{users: make(map[string]U)})
+	return multiService, nil
 }
 
 func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
@@ -188,6 +219,24 @@ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
 	}
 	if len(users) == 0 {
 		return snell.ErrNoUsers
+	}
+	if s.authentication == snell.MultiUserAuthenticationPSK {
+		credentialSet := make(map[string]struct{}, len(users))
+		for _, credential := range userKeys {
+			if len(credential) == 0 {
+				return snell.ErrMissingPSK
+			}
+			key := string(credential)
+			if _, loaded := credentialSet[key]; loaded {
+				return E.New("snell: duplicate user psk")
+			}
+			credentialSet[key] = struct{}{}
+		}
+		s.state.Store(&multiUserState[U]{
+			pskUsers:         append([]U(nil), users...),
+			pskAuthenticator: multiuser.New(userKeys),
+		})
+		return nil
 	}
 	userMap := make(map[string]U, len(users))
 	for index, user := range users {
@@ -204,24 +253,159 @@ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
 		}
 		userMap[keyString] = user
 	}
-	s.users = userMap
+	s.state.Store(&multiUserState[U]{users: userMap})
 	return nil
 }
 
 func (s *MultiService[U]) NewConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
-	err := s.newConnection(ctx, conn, source, onClose)
+	var err error
+	if s.authentication == snell.MultiUserAuthenticationPSK {
+		err = s.newPSKConnection(ctx, conn, source, onClose)
+	} else {
+		err = s.newConnection(ctx, conn, source, onClose)
+	}
 	if err != nil {
 		return &snell.ServerError{Conn: conn, Source: source, Cause: err}
 	}
 	return nil
 }
 
+func (s *MultiService[U]) newPSKConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
+	state := s.state.Load()
+	if state == nil || state.pskAuthenticator == nil {
+		return snell.ErrNoUsers
+	}
+	conn = s.obfs.ServerConn(conn)
+	first := make([]byte, snell.SaltLen+snell.HeaderCipherLen)
+	_, err := io.ReadFull(conn, first)
+	if err != nil {
+		return err
+	}
+	salt := first[:snell.SaltLen]
+	headerCipher := first[snell.SaltLen:]
+	matchedPSK, userIndex, matchedAEAD, err := multiuser.AuthenticateWithResult(state.pskAuthenticator, func(psk []byte) (cipher.AEAD, bool) {
+		aead, createErr := snell.NewAEAD(snell.DeriveKey(psk, salt))
+		if createErr != nil {
+			return nil, false
+		}
+		header := append([]byte(nil), headerCipher...)
+		plain, openErr := aead.Open(header[:0], make([]byte, snell.NonceLen), header, nil)
+		if openErr != nil || len(plain) != snell.HeaderPlainLen || plain[0] != snell.HeaderVersion {
+			return nil, false
+		}
+		return aead, true
+	})
+	if err != nil {
+		return err
+	}
+	if s.saltCache.CheckAndAdd(salt) {
+		return errDuplicateSalt
+	}
+	reader := newReader(io.MultiReader(bytes.NewReader(headerCipher), conn), matchedAEAD, make([]byte, snell.NonceLen))
+	record, err := reader.ReadRecord()
+	if err != nil {
+		return E.Cause(err, "read request")
+	}
+	request, err := s.readRequest(record)
+	if err != nil {
+		record.Release()
+		return E.Cause(err, "decode request")
+	}
+	requestCtx := auth.ContextWithUser(ctx, state.pskUsers[userIndex])
+	matchedService := &Service{psk: matchedPSK, handler: s.handler}
+	switch request.Command {
+	case snell.CommandConnect:
+		serverConn := &serverConn{Conn: conn, service: matchedService, reader: reader}
+		if record.IsEmpty() {
+			record.Release()
+		} else {
+			reader.SetCache(record)
+		}
+		s.handler.NewConnectionEx(requestCtx, serverConn, source, request.Destination, onClose)
+		return nil
+	case snell.CommandConnectV2:
+		reuseSession := &serverReuseSession[struct{}]{Conn: conn, service: matchedService, reader: reader}
+		return reuseSession.Serve(requestCtx, source, onClose, record, request)
+	case snell.CommandUDP:
+		record.Release()
+		packetConn := &serverPacketConn{Conn: conn, service: matchedService, reader: reader}
+		if err = packetConn.writeTunnelReply(); err != nil {
+			return err
+		}
+		s.handler.NewPacketConnectionEx(requestCtx, packetConn, source, M.Socksaddr{}, onClose)
+		return nil
+	case snell.CommandPing:
+		record.Release()
+		if err = matchedService.writePong(conn); err != nil {
+			conn.Close()
+			return err
+		}
+		return conn.Close()
+	default:
+		record.Release()
+		return E.Extend(snell.ErrUnsupportedCommand, request.Command)
+	}
+}
+
 func (s *MultiService[U]) authenticate(ctx context.Context, request snell.Request) (context.Context, error) {
-	user, loaded := s.users[string(request.ClientID)]
+	state := s.state.Load()
+	if state == nil {
+		return nil, snell.ErrNoUsers
+	}
+	user, loaded := state.users[string(request.ClientID)]
 	if !loaded {
 		return nil, snell.ErrBadUserKey
 	}
 	return auth.ContextWithUser(ctx, user), nil
+}
+
+func (s *Service) ParseQUICProxyInit(data []byte) (*snell.QUICProxySession, []byte, error) {
+	target, _, payload, err := snell.DecodeQUICProxyInit(s.psk, data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return snell.NewQUICProxySession(s.psk, target, nil), payload, nil
+}
+
+func (s *MultiService[U]) ParseQUICProxyInit(data []byte) (*snell.QUICProxySession, []byte, error) {
+	state := s.state.Load()
+	if state == nil {
+		return nil, nil, snell.ErrNoUsers
+	}
+	if s.authentication != snell.MultiUserAuthenticationPSK {
+		target, userKey, payload, err := snell.DecodeQUICProxyInit(s.psk, data)
+		if err != nil {
+			return nil, nil, err
+		}
+		user, loaded := state.users[string(userKey)]
+		if !loaded {
+			return nil, nil, snell.ErrBadUserKey
+		}
+		return snell.NewQUICProxySession(s.psk, target, func(ctx context.Context) context.Context {
+			return auth.ContextWithUser(ctx, user)
+		}), payload, nil
+	}
+	if state.pskAuthenticator == nil {
+		return nil, nil, snell.ErrNoUsers
+	}
+	type quicProxyMatch struct {
+		target  M.Socksaddr
+		payload []byte
+	}
+	matchedPSK, userIndex, matched, err := multiuser.AuthenticateWithResult(state.pskAuthenticator, func(psk []byte) (quicProxyMatch, bool) {
+		candidateTarget, _, candidatePayload, decodeErr := snell.DecodeQUICProxyInit(psk, data)
+		if decodeErr != nil {
+			return quicProxyMatch{}, false
+		}
+		return quicProxyMatch{target: candidateTarget, payload: candidatePayload}, true
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	user := state.pskUsers[userIndex]
+	return snell.NewQUICProxySession(matchedPSK, matched.target, func(ctx context.Context) context.Context {
+		return auth.ContextWithUser(ctx, user)
+	}), matched.payload, nil
 }
 
 func (s *Service) readRequest(record *buf.Buffer) (snell.Request, error) {
@@ -673,9 +857,9 @@ func (s *Service) writePong(conn net.Conn) error {
 }
 
 var (
-	_ N.ExtendedConn           = (*serverConn)(nil)
-	_ N.ReadWaiter             = (*serverConn)(nil)
-	_ N.VectorisedWriteCreator = (*serverConn)(nil)
-	_ N.VectorisedWriter       = (*serverVectorisedWriter)(nil)
-	_ N.WriteCloser            = (*serverConn)(nil)
+	_ N.ExtendedConn               = (*serverConn)(nil)
+	_ N.ReadWaiter                 = (*serverConn)(nil)
+	_ snell.VectorisedWriteCreator = (*serverConn)(nil)
+	_ N.VectorisedWriter           = (*serverVectorisedWriter)(nil)
+	_ N.WriteCloser                = (*serverConn)(nil)
 )

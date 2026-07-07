@@ -86,7 +86,7 @@ func (r *reader) ReadRecord() (*buf.Buffer, error) {
 			return nil, err
 		}
 	}
-	body := r.readWaitOptions.NewBufferSize(payloadLen + snell.AEADTagLen)
+	body := snell.NewReadWaitBuffer(r.readWaitOptions, payloadLen+snell.AEADTagLen)
 	_, err = body.ReadFullFrom(r.upstream, payloadLen+snell.AEADTagLen)
 	if err != nil {
 		if padding != nil {
@@ -746,13 +746,13 @@ func (w *writer) Upstream() any {
 }
 
 var (
-	_ N.ExtendedReader         = (*reader)(nil)
-	_ N.ReadWaiter             = (*reader)(nil)
-	_ N.ExtendedWriter         = (*writer)(nil)
-	_ N.VectorisedWriteCreator = (*writer)(nil)
-	_ N.VectorisedWriter       = (*vectorisedWriter)(nil)
-	_ N.VectorisedWriter       = (*packetVectorisedWriter)(nil)
-	_ N.FrontHeadroom          = (*writer)(nil)
-	_ N.RearHeadroom           = (*writer)(nil)
-	_ N.WriterWithMTU          = (*writer)(nil)
+	_ N.ExtendedReader             = (*reader)(nil)
+	_ N.ReadWaiter                 = (*reader)(nil)
+	_ N.ExtendedWriter             = (*writer)(nil)
+	_ snell.VectorisedWriteCreator = (*writer)(nil)
+	_ N.VectorisedWriter           = (*vectorisedWriter)(nil)
+	_ N.VectorisedWriter           = (*packetVectorisedWriter)(nil)
+	_ N.FrontHeadroom              = (*writer)(nil)
+	_ N.RearHeadroom               = (*writer)(nil)
+	_ N.WriterWithMTU              = (*writer)(nil)
 )

@@ -452,9 +452,9 @@ func (c *serverReuseConn[U]) Upstream() any {
 }
 
 var (
-	_ N.ExtendedConn           = (*serverReuseConn[struct{}])(nil)
-	_ N.ReadWaiter             = (*serverReuseConn[struct{}])(nil)
-	_ N.VectorisedWriteCreator = (*serverReuseConn[struct{}])(nil)
-	_ N.VectorisedWriter       = (*serverReuseVectorisedWriter[struct{}])(nil)
-	_ N.WriteCloser            = (*serverReuseConn[struct{}])(nil)
+	_ N.ExtendedConn               = (*serverReuseConn[struct{}])(nil)
+	_ N.ReadWaiter                 = (*serverReuseConn[struct{}])(nil)
+	_ snell.VectorisedWriteCreator = (*serverReuseConn[struct{}])(nil)
+	_ N.VectorisedWriter           = (*serverReuseVectorisedWriter[struct{}])(nil)
+	_ N.WriteCloser                = (*serverReuseConn[struct{}])(nil)
 )
