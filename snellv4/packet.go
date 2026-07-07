@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	snell "github.com/sagernet/sing-snell"
+	"github.com/sagernet/sing-snell/internal/batch"
 	"github.com/sagernet/sing-snell/internal/reuse"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -113,7 +114,7 @@ func (c *clientPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksad
 func (c *clientPacketConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
 	upstreamWriter, created := bufio.CreateVectorisedWriter(c.Conn)
 	if !created {
-		return nil, false
+		return batch.FallbackPacketWriter{Writer: c}, true
 	}
 	return &clientPacketBatchWriter{conn: c, upstream: upstreamWriter}, true
 }

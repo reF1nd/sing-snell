@@ -4,7 +4,7 @@
 
 ## Features
 
-* All complete features except the v5 QUIC proxy.
+* ~~All complete features except the v5 QUIC proxy.~~ All features are complete.
 * Behavior as consistent with the official implementation as possible.
 * Performance at least on par with the official implementation.
 
