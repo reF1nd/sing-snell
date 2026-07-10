@@ -20,7 +20,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-const maxUDPResponseHeaderLen = 1 + 16 + 2
+const maxUDPResponseHeaderLen = snell.MaxUDPResponseAddressLen
 
 type serverPacketConn struct {
 	net.Conn
@@ -33,10 +33,7 @@ type serverPacketConn struct {
 }
 
 func (c *serverPacketConn) responseAddrLen(source M.Socksaddr) int {
-	if source.Unwrap().Addr.Is4() {
-		return 1 + 4 + 2
-	}
-	return 1 + 16 + 2
+	return snell.UDPResponseAddressLen(source)
 }
 
 func (c *serverPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
@@ -130,7 +127,7 @@ func (c *serverPacketConn) readRequestPacketDestination(record *buf.Buffer) (M.S
 }
 
 func (c *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	if !destination.IsIP() {
+	if !snell.IsUDPResponseAddressEncodable(destination) {
 		buffer.Release()
 		return nil
 	}
@@ -191,7 +188,7 @@ func (w *serverPacketBatchWriter) WritePacketBatch(buffers []*buf.Buffer, destin
 	writeIndex := 0
 	for index, buffer := range buffers {
 		destination := destinations[index]
-		if !destination.IsIP() {
+		if !snell.IsUDPResponseAddressEncodable(destination) {
 			buffer.Release()
 			continue
 		}

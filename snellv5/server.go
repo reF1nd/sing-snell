@@ -329,13 +329,7 @@ func (s *MultiService[U]) newPSKConnection(ctx context.Context, conn net.Conn, s
 		reuseSession := &serverReuseSession[struct{}]{Conn: conn, service: matchedService, transport: transport, reader: reader}
 		return reuseSession.Serve(requestCtx, source, onClose, record, request)
 	case snell.CommandUDP:
-		record.Release()
-		packetConn := &serverPacketConn{Conn: conn, service: matchedService, reader: reader}
-		if err = packetConn.writeTunnelReply(); err != nil {
-			return err
-		}
-		s.handler.NewPacketConnectionEx(requestCtx, packetConn, source, M.Socksaddr{}, onClose)
-		return nil
+		return matchedService.newPacketConnection(requestCtx, conn, source, onClose, reader, record)
 	case snell.CommandPing:
 		record.Release()
 		if err = matchedService.writePong(conn); err != nil {
@@ -366,6 +360,9 @@ func (s *Service) ParseQUICProxyInit(data []byte) (*snell.QUICProxySession, []by
 	if err != nil {
 		return nil, nil, err
 	}
+	if err = validateQUICProxyInitPayload(payload); err != nil {
+		return nil, nil, err
+	}
 	return snell.NewQUICProxySession(s.psk, target, nil), payload, nil
 }
 
@@ -377,6 +374,9 @@ func (s *MultiService[U]) ParseQUICProxyInit(data []byte) (*snell.QUICProxySessi
 	if s.authentication != snell.MultiUserAuthenticationPSK {
 		target, userKey, payload, err := snell.DecodeQUICProxyInit(s.psk, data)
 		if err != nil {
+			return nil, nil, err
+		}
+		if err = validateQUICProxyInitPayload(payload); err != nil {
 			return nil, nil, err
 		}
 		user, loaded := state.users[string(userKey)]
@@ -404,10 +404,20 @@ func (s *MultiService[U]) ParseQUICProxyInit(data []byte) (*snell.QUICProxySessi
 	if err != nil {
 		return nil, nil, err
 	}
+	if err = validateQUICProxyInitPayload(matched.payload); err != nil {
+		return nil, nil, err
+	}
 	user := state.pskUsers[userIndex]
 	return snell.NewQUICProxySession(matchedPSK, matched.target, func(ctx context.Context) context.Context {
 		return auth.ContextWithUser(ctx, user)
 	}), matched.payload, nil
+}
+
+func validateQUICProxyInitPayload(payload []byte) error {
+	if len(payload) == 0 {
+		return E.New("snell quic proxy: init request does not contain a payload")
+	}
+	return nil
 }
 
 func (s *Service) readRequest(record *buf.Buffer) (snell.Request, error) {
@@ -491,8 +501,7 @@ func (s *Service) newConnection(ctx context.Context, conn net.Conn, source M.Soc
 		reuseSession := &serverReuseSession[struct{}]{Conn: conn, service: s, transport: transport, reader: r}
 		return reuseSession.Serve(ctx, source, onClose, record, request)
 	case snell.CommandUDP:
-		record.Release()
-		return s.newPacketConnection(ctx, &serverPacketConn{Conn: conn, service: s, reader: r}, source, onClose)
+		return s.newPacketConnection(ctx, conn, source, onClose, r, record)
 	case snell.CommandPing:
 		record.Release()
 		err = s.writePong(conn)
@@ -505,21 +514,6 @@ func (s *Service) newConnection(ctx context.Context, conn net.Conn, source M.Soc
 		record.Release()
 		return E.Extend(snell.ErrUnsupportedCommand, request.Command)
 	}
-}
-
-func (s *Service) newPacketConnection(ctx context.Context, packetConn *serverPacketConn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
-	err := packetConn.writeTunnelReply()
-	if err != nil {
-		return err
-	}
-	firstPacket := buf.NewPacket()
-	destination, err := packetConn.ReadPacket(firstPacket)
-	if err != nil {
-		firstPacket.Release()
-		return E.Cause(err, "read first packet")
-	}
-	s.handler.NewPacketConnectionEx(ctx, bufio.NewCachedPacketConn(packetConn, firstPacket, destination), source, destination, onClose)
-	return nil
 }
 
 func (s *MultiService[U]) newConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
@@ -576,8 +570,7 @@ func (s *MultiService[U]) newConnection(ctx context.Context, conn net.Conn, sour
 			record.Release()
 			return err
 		}
-		record.Release()
-		return s.newPacketConnection(requestCtx, &serverPacketConn{Conn: conn, service: s.Service, reader: r}, source, onClose)
+		return s.Service.newPacketConnection(requestCtx, conn, source, onClose, r, record)
 	case snell.CommandPing:
 		record.Release()
 		err = s.writePong(conn)
@@ -590,6 +583,28 @@ func (s *MultiService[U]) newConnection(ctx context.Context, conn net.Conn, sour
 		record.Release()
 		return E.Extend(snell.ErrUnsupportedCommand, request.Command)
 	}
+}
+
+func (s *Service) newPacketConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc, reader *reader, record *buf.Buffer) error {
+	packetConn := &serverPacketConn{Conn: conn, service: s, reader: reader}
+	err := packetConn.writeTunnelReply()
+	if err != nil {
+		record.Release()
+		return err
+	}
+	if record.IsEmpty() {
+		record.Release()
+	} else {
+		reader.SetCache(record)
+	}
+	firstPacket := buf.NewPacket()
+	firstDestination, err := packetConn.ReadPacket(firstPacket)
+	if err != nil {
+		firstPacket.Release()
+		return err
+	}
+	s.handler.NewPacketConnectionEx(ctx, bufio.NewCachedPacketConn(packetConn, firstPacket, firstDestination), source, firstDestination, onClose)
+	return nil
 }
 
 var (

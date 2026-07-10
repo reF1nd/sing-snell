@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	snell "github.com/sagernet/sing-snell"
 	"github.com/sagernet/sing-snell/snellv6"
 	"github.com/sagernet/sing/common/auth"
 	M "github.com/sagernet/sing/common/metadata"
@@ -96,7 +97,7 @@ func testV6UoTAdvertisesRC1PacketMTU(
 		if index == 0 {
 			require.Equal(t, 0xffff-(1+1+255+2), options.MTU)
 		} else {
-			require.Equal(t, 0xffff-(1+255+2), options.MTU)
+			require.Equal(t, 0xffff-snell.MaxUDPResponseAddressLen, options.MTU)
 		}
 		buffer := options.NewPacketBuffer()
 		require.GreaterOrEqual(t, buffer.FreeLen(), 1200)
