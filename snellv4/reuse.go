@@ -125,8 +125,14 @@ func (s *reuseSession) DialConn(destination M.Socksaddr) (net.Conn, error) {
 	if state != reuse.StateActive {
 		return nil, E.New("snell: reuse session is busy")
 	}
-
-	return &reuseConn{Conn: s.Conn, session: s, destination: destination}, nil
+	// Snapshot buffer requirements before publishing the logical connection.
+	// Metadata queries may run concurrently with the lazy request handshake.
+	request := snell.Request{Command: snell.CommandConnectV2, ClientID: s.client.userKey, Destination: destination}
+	requestHeadroom := request.Len() + snell.HeaderCipherLen
+	if s.writer == nil {
+		requestHeadroom += snell.SaltLen + maxInitialPaddingLen
+	}
+	return &reuseConn{Conn: s.Conn, session: s, destination: destination, requestHeadroom: requestHeadroom}, nil
 }
 
 func (s *reuseSession) closeIdle() bool {
@@ -193,12 +199,14 @@ func (s *reuseSession) drain() {
 
 type reuseConn struct {
 	net.Conn
-	session     *reuseSession
-	destination M.Socksaddr
+	session         *reuseSession
+	destination     M.Socksaddr
+	requestHeadroom int
 
 	access          sync.Mutex
 	writer          *writer
 	writeClosed     bool
+	requestWritten  atomic.Bool
 	closeWriteErr   error
 	closeOnce       sync.Once
 	closeErr        error
@@ -212,6 +220,9 @@ type reuseConn struct {
 func (c *reuseConn) readResponse() error {
 	if c.replyRead.Load() {
 		return nil
+	}
+	if err := c.ensureRequest(); err != nil {
+		return err
 	}
 	if c.session.reader == nil {
 		c.session.reader = &reader{upstream: eof.UnexpectedReader{Reader: c.session.Conn}, psk: c.session.client.psk}
@@ -230,6 +241,23 @@ func (c *reuseConn) readResponse() error {
 	}
 	c.replyRead.Store(true)
 	return nil
+}
+
+// ensureRequest writes the request before the reply is read, so that
+// server-first protocols do not wait for client data that never comes.
+func (c *reuseConn) ensureRequest() error {
+	if c.requestWritten.Load() {
+		return nil
+	}
+	c.access.Lock()
+	defer c.access.Unlock()
+	if c.writer != nil {
+		return nil
+	}
+	if c.writeClosed {
+		return c.closeWriteErr
+	}
+	return c.writeRequest(nil)
 }
 
 func (c *reuseConn) Read(p []byte) (int, error) {
@@ -345,6 +373,7 @@ func (c *reuseConn) writeRequest(payload []byte) error {
 		return E.Cause(err, "write request")
 	}
 	c.writer = c.session.writer
+	c.requestWritten.Store(true)
 	return nil
 }
 
@@ -368,6 +397,7 @@ func (c *reuseConn) writeRequestBuffer(buffer *buf.Buffer) error {
 		return E.Cause(err, "write request")
 	}
 	c.writer = c.session.writer
+	c.requestWritten.Store(true)
 	return nil
 }
 
@@ -573,11 +603,10 @@ func (w *reuseReadWaiter) WaitReadBuffer() (*buf.Buffer, error) {
 }
 
 func (c *reuseConn) FrontHeadroom() int {
-	if c.writer != nil {
-		return c.writer.FrontHeadroom()
+	if !c.requestWritten.Load() {
+		return c.requestHeadroom
 	}
-	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.session.client.userKey, Destination: c.destination}
-	return requestPayload.Len() + snell.SaltLen + snell.HeaderCipherLen + maxInitialPaddingLen
+	return snell.HeaderCipherLen
 }
 
 func (c *reuseConn) RearHeadroom() int {
@@ -593,7 +622,7 @@ func (c *reuseConn) NeedHandshakeForRead() bool {
 }
 
 func (c *reuseConn) NeedHandshakeForWrite() bool {
-	return c.writer == nil
+	return !c.requestWritten.Load()
 }
 
 func (c *reuseConn) NeedAdditionalReadDeadline() bool {
