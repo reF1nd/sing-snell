@@ -18,7 +18,7 @@ import (
 
 const (
 	maxUDPRequestHeaderLen  = 1 + 1 + 255 + 2
-	maxUDPResponseHeaderLen = 1 + 16 + 2
+	maxUDPResponseHeaderLen = snell.MaxUDPResponseAddressLen
 )
 
 func (c *clientPacketConn) udpRequestAddrLen(destination M.Socksaddr) int {
@@ -259,10 +259,7 @@ type serverPacketConn struct {
 }
 
 func (c *serverPacketConn) responseAddrLen(source M.Socksaddr) int {
-	if source.Unwrap().Addr.Is4() {
-		return 1 + 4 + 2
-	}
-	return 1 + 16 + 2
+	return snell.UDPResponseAddressLenPreserveMapped(source)
 }
 
 func (c *serverPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
@@ -309,7 +306,7 @@ func (c *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksad
 	writer := c.writer
 	c.writeAccess.Unlock()
 	header := buf.With(buffer.ExtendHeader(c.responseAddrLen(destination)))
-	err := snell.WriteUDPResponseAddress(header, destination)
+	err := snell.WriteUDPResponseAddressPreserveMapped(header, destination)
 	if err != nil {
 		buffer.Release()
 		return err
@@ -369,7 +366,7 @@ func (w *serverPacketBatchWriter) WritePacketBatch(buffers []*buf.Buffer, destin
 	w.access.Unlock()
 	for index, buffer := range buffers {
 		header := buf.With(buffer.ExtendHeader(w.conn.responseAddrLen(destinations[index])))
-		err := snell.WriteUDPResponseAddress(header, destinations[index])
+		err := snell.WriteUDPResponseAddressPreserveMapped(header, destinations[index])
 		if err != nil {
 			buf.ReleaseMulti(buffers)
 			return err

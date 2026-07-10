@@ -186,14 +186,15 @@ func (c *clientPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
 		if err != nil {
 			return M.Socksaddr{}, err
 		}
-		if record.Len() < 8 {
+		if record.IsEmpty() {
 			record.Release()
 			return M.Socksaddr{}, E.New("snell: udp response too short")
 		}
 		// Surge 6.7.0 (11520): SGUDPConnectorSnellV4::socket:didReadData: silently ignores UDP
-		// response frames whose address type is neither IPv4 nor IPv6.
+		// response frames whose address type is neither IPv4 nor IPv6. sing-box
+		// also accepts the legacy domain response extension for domain-preserving UDP routing.
 		addressType := record.Bytes()[0]
-		if addressType != snell.AddressTypeIPv4 && addressType != snell.AddressTypeIPv6 {
+		if addressType != snell.AddressTypeDomain && addressType != snell.AddressTypeIPv4 && addressType != snell.AddressTypeIPv6 {
 			record.Release()
 			continue
 		}
@@ -251,14 +252,15 @@ func (c *clientPacketConn) WaitReadPacket() (*buf.Buffer, M.Socksaddr, error) {
 		if err != nil {
 			return nil, M.Socksaddr{}, err
 		}
-		if record.Len() < 8 {
+		if record.IsEmpty() {
 			record.Release()
 			return nil, M.Socksaddr{}, E.New("snell: udp response too short")
 		}
 		// Surge 6.7.0 (11520): SGUDPConnectorSnellV4::socket:didReadData: silently ignores UDP
-		// response frames whose address type is neither IPv4 nor IPv6.
+		// response frames whose address type is neither IPv4 nor IPv6. sing-box
+		// also accepts the legacy domain response extension for domain-preserving UDP routing.
 		addressType := record.Bytes()[0]
-		if addressType != snell.AddressTypeIPv4 && addressType != snell.AddressTypeIPv6 {
+		if addressType != snell.AddressTypeDomain && addressType != snell.AddressTypeIPv4 && addressType != snell.AddressTypeIPv6 {
 			record.Release()
 			continue
 		}

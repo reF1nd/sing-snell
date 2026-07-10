@@ -62,15 +62,28 @@ func (s *serverReuseSession[U]) Serve(ctx context.Context, source M.Socksaddr, o
 					return err
 				}
 			}
-			record.Release()
 			packetConn := &serverPacketConn{Conn: s.Conn, service: s.service, reader: s.reader, writer: s.writer}
-			err = s.service.newPacketConnection(requestCtx, packetConn, source, onClose)
+			err = packetConn.writeTunnelReply()
 			if err != nil {
+				record.Release()
 				s.Conn.Close()
 				return err
 			}
 			s.writer = packetConn.writer
+			if record.IsEmpty() {
+				record.Release()
+			} else {
+				s.reader.SetCache(record)
+			}
+			firstPacket := buf.NewPacket()
+			firstDestination, err := packetConn.ReadPacket(firstPacket)
+			if err != nil {
+				firstPacket.Release()
+				s.Conn.Close()
+				return err
+			}
 			callOnClose = false
+			s.service.handler.NewPacketConnectionEx(requestCtx, bufio.NewCachedPacketConn(packetConn, firstPacket, firstDestination), source, firstDestination, onClose)
 			return nil
 		case snell.CommandPing:
 			record.Release()

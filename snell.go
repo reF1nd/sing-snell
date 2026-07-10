@@ -38,6 +38,7 @@ const (
 
 const (
 	UDPCommandForward = 0x01
+	AddressTypeDomain = 0x03
 	AddressTypeIPv4   = 0x04
 	AddressTypeIPv6   = 0x06
 )

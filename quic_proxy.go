@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing/common/buf"
@@ -24,19 +23,34 @@ func IsQUICLooking(first byte) bool {
 	return first >= 0xc0 || first >= 0x40 && first <= 0x7f
 }
 
-func IsQUICInitial(first byte) bool {
-	return first >= 0xc0
+func IsQUICInitial(packet []byte) bool {
+	if len(packet) < 5 || packet[0]&0xc0 != 0xc0 {
+		return false
+	}
+	version := binary.BigEndian.Uint32(packet[1:5])
+	if version == 0 {
+		return false
+	}
+	packetType := packet[0] & 0x30
+	// RFC 9369 assigns type 1 to Initial packets; QUIC v1 and compatible
+	// draft versions assign type 0.
+	if version == 0x6b3343cf {
+		return packetType == 0x10
+	}
+	return packetType == 0x00
 }
 
 type QUICProxyPacketConn struct {
-	conn          net.Conn
-	destination   M.Socksaddr
-	psk           []byte
-	userKey       []byte
-	handshakeDone atomic.Bool
+	conn        net.Conn
+	destination M.Socksaddr
+	psk         []byte
+	userKey     []byte
 }
 
 func NewQUICProxyPacketConn(conn net.Conn, psk []byte, userKey []byte, destination M.Socksaddr, initialPayload []byte) (*QUICProxyPacketConn, error) {
+	if len(initialPayload) == 0 {
+		return nil, errors.New("snell quic proxy: initial payload is required")
+	}
 	packetConn := &QUICProxyPacketConn{
 		conn:        conn,
 		destination: destination,
@@ -45,9 +59,6 @@ func NewQUICProxyPacketConn(conn net.Conn, psk []byte, userKey []byte, destinati
 	}
 	if _, err := packetConn.sendInitFrame(initialPayload); err != nil {
 		return nil, err
-	}
-	if len(initialPayload) > 0 && initialPayload[0]&0xc0 == 0x40 {
-		packetConn.handshakeDone.Store(true)
 	}
 	return packetConn, nil
 }
@@ -71,12 +82,14 @@ func (c *QUICProxyPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
 	if len(payload) == 0 {
 		return 0, nil
 	}
+	// A later Initial may arrive after the server's source-address context has
+	// expired while the local UDP socket is still alive. A fresh init is valid
+	// both as a duplicate for a live context and as a replacement for an expired
+	// one, so it avoids sending an unrecoverable raw Initial without context.
+	if IsQUICInitial(payload) {
+		return c.sendInitFrame(payload)
+	}
 	if IsQUICLooking(payload[0]) {
-		if payload[0]&0xc0 == 0x40 {
-			c.handshakeDone.Store(true)
-		} else if payload[0]&0xf0 == 0xc0 && c.handshakeDone.Load() {
-			return c.sendInitFrame(payload)
-		}
 		if _, err := c.conn.Write(payload); err != nil {
 			return 0, err
 		}
@@ -163,8 +176,8 @@ func DecodeQUICProxyInit(psk []byte, data []byte) (M.Socksaddr, []byte, []byte, 
 }
 
 func encodeQUICProxyFrame(psk []byte, plain []byte) ([]byte, error) {
-	if len(plain) > quicProxyMaxPlaintext {
-		return nil, errors.New("snell quic proxy: init payload exceeds frame capacity")
+	if len(plain) == 0 {
+		return nil, errors.New("snell quic proxy: empty init payload")
 	}
 	salt := make([]byte, SaltLen)
 	for {
@@ -180,16 +193,19 @@ func encodeQUICProxyFrame(psk []byte, plain []byte) ([]byte, error) {
 		return nil, err
 	}
 	nonce := make([]byte, NonceLen)
-	header := make([]byte, HeaderPlainLen)
-	header[0] = HeaderVersion
-	binary.BigEndian.PutUint16(header[5:7], uint16(len(plain)))
-	header = aead.Seal(header[:0], nonce, header, nil)
-	IncreaseNonce(nonce)
-	body := aead.Seal(nil, nonce, plain, nil)
-	frame := make([]byte, 0, len(salt)+len(header)+len(body))
+	frame := make([]byte, 0, len(salt)+len(plain)+(len(plain)+quicProxyMaxPlaintext-1)/quicProxyMaxPlaintext*(HeaderCipherLen+AEADTagLen))
 	frame = append(frame, salt...)
-	frame = append(frame, header...)
-	frame = append(frame, body...)
+	for len(plain) > 0 {
+		payloadLen := min(len(plain), quicProxyMaxPlaintext)
+		header := make([]byte, HeaderPlainLen)
+		header[0] = HeaderVersion
+		binary.BigEndian.PutUint16(header[5:7], uint16(payloadLen))
+		frame = aead.Seal(frame, nonce, header, nil)
+		IncreaseNonce(nonce)
+		frame = aead.Seal(frame, nonce, plain[:payloadLen], nil)
+		IncreaseNonce(nonce)
+		plain = plain[payloadLen:]
+	}
 	return frame, nil
 }
 
@@ -203,26 +219,36 @@ func decodeQUICProxyFrame(psk []byte, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	nonce := make([]byte, NonceLen)
-	headerCipher := append([]byte(nil), data[SaltLen:SaltLen+HeaderCipherLen]...)
-	header, err := aead.Open(headerCipher[:0], nonce, headerCipher, nil)
-	if err != nil || len(header) != HeaderPlainLen || header[0] != HeaderVersion {
-		return nil, errors.New("snell quic proxy: header authentication failed")
+	data = data[SaltLen:]
+	var plain []byte
+	for len(data) > 0 {
+		if len(data) < HeaderCipherLen {
+			return nil, errors.New("snell quic proxy: truncated frame header")
+		}
+		headerCipher := append([]byte(nil), data[:HeaderCipherLen]...)
+		header, openErr := aead.Open(headerCipher[:0], nonce, headerCipher, nil)
+		if openErr != nil || len(header) != HeaderPlainLen || header[0] != HeaderVersion {
+			return nil, errors.New("snell quic proxy: header authentication failed")
+		}
+		IncreaseNonce(nonce)
+		if binary.BigEndian.Uint16(header[3:5]) != 0 {
+			return nil, errors.New("snell quic proxy: unexpected padding")
+		}
+		payloadLen := int(binary.BigEndian.Uint16(header[5:7]))
+		frameLen := HeaderCipherLen + payloadLen + AEADTagLen
+		if payloadLen == 0 || len(data) < frameLen {
+			return nil, errors.New("snell quic proxy: invalid payload length")
+		}
+		bodyCipher := append([]byte(nil), data[HeaderCipherLen:frameLen]...)
+		body, openErr := aead.Open(bodyCipher[:0], nonce, bodyCipher, nil)
+		if openErr != nil {
+			return nil, errors.New("snell quic proxy: payload authentication failed")
+		}
+		IncreaseNonce(nonce)
+		plain = append(plain, body...)
+		data = data[frameLen:]
 	}
-	IncreaseNonce(nonce)
-	if binary.BigEndian.Uint16(header[3:5]) != 0 {
-		return nil, errors.New("snell quic proxy: unexpected padding")
-	}
-	payloadLen := int(binary.BigEndian.Uint16(header[5:7]))
-	expectedLen := SaltLen + HeaderCipherLen + payloadLen + AEADTagLen
-	if payloadLen == 0 || len(data) != expectedLen {
-		return nil, errors.New("snell quic proxy: invalid payload length")
-	}
-	bodyCipher := append([]byte(nil), data[SaltLen+HeaderCipherLen:]...)
-	body, err := aead.Open(bodyCipher[:0], nonce, bodyCipher, nil)
-	if err != nil {
-		return nil, errors.New("snell quic proxy: payload authentication failed")
-	}
-	return body, nil
+	return plain, nil
 }
 
 func encodeQUICProxyInit(userKey []byte, destination M.Socksaddr, payload []byte) ([]byte, error) {
@@ -264,5 +290,9 @@ func parseQUICProxyInit(plain []byte) (M.Socksaddr, []byte, []byte, error) {
 	index += hostLen
 	port := binary.BigEndian.Uint16(plain[index : index+2])
 	index += 2
-	return M.ParseSocksaddrHostPort(host, port), userKey, plain[index:], nil
+	target := M.ParseSocksaddrHostPort(host, port)
+	if !target.IsValid() || port == 0 {
+		return M.Socksaddr{}, nil, nil, errors.New("snell quic proxy: invalid target")
+	}
+	return target, userKey, plain[index:], nil
 }
