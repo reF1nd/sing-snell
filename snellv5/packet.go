@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	maxUDPResponseHeaderLen = 1 + 16 + 2
+	maxUDPResponseHeaderLen = snell.MaxUDPResponseAddressLen
 	minUDPPayloadLimit      = framePayloadStep
 )
 
@@ -34,10 +34,7 @@ type serverPacketConn struct {
 }
 
 func (c *serverPacketConn) responseAddrLen(source M.Socksaddr) int {
-	if source.Unwrap().Addr.Is4() {
-		return 1 + 4 + 2
-	}
-	return 1 + 16 + 2
+	return snell.UDPResponseAddressLen(source)
 }
 
 func (c *serverPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
