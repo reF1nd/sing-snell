@@ -187,6 +187,10 @@ type httpObfsClientConn struct {
 	requestSent bool
 }
 
+func (c *httpObfsClientConn) Upstream() any {
+	return c.Conn
+}
+
 func (c *httpObfsClientConn) Read(p []byte) (int, error) {
 	return c.head.Read(p)
 }
@@ -224,6 +228,10 @@ type httpObfsServerConn struct {
 	head         httpObfsHead
 	writeAccess  sync.Mutex
 	responseSent bool
+}
+
+func (c *httpObfsServerConn) Upstream() any {
+	return c.Conn
 }
 
 func (c *httpObfsServerConn) Read(p []byte) (int, error) {
@@ -299,6 +307,10 @@ type tlsObfsClientConn struct {
 	config              ObfsConfig
 	clientHelloSent     bool
 	serverHelloReceived bool
+}
+
+func (c *tlsObfsClientConn) Upstream() any {
+	return c.Conn
 }
 
 func (c *tlsObfsClientConn) Read(p []byte) (int, error) {
@@ -393,6 +405,10 @@ type tlsObfsServerConn struct {
 	clientHelloReceived bool
 	sessionNameSkipped  bool
 	serverHelloSent     bool
+}
+
+func (c *tlsObfsServerConn) Upstream() any {
+	return c.Conn
 }
 
 func (c *tlsObfsServerConn) Read(p []byte) (int, error) {
