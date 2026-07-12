@@ -493,7 +493,7 @@ func (w *writer) WritePacketBuffer(buffer *buf.Buffer) error {
 	} else {
 		payloadLimit = framePayloadStep
 	}
-	if dataLen > payloadLimit {
+	if dataLen > maxPayload {
 		buffer.Release()
 		return snell.ErrPayloadTooLarge
 	}
@@ -687,6 +687,12 @@ func (w *packetVectorisedWriter) WriteVectorised(buffers []*buf.Buffer) error {
 	recordWriter := w.writer
 	recordWriter.access.Lock()
 	defer recordWriter.access.Unlock()
+	for _, buffer := range buffers {
+		if buffer.Len() > maxPayload {
+			buf.ReleaseMulti(buffers)
+			return snell.ErrPayloadTooLarge
+		}
+	}
 	for index, buffer := range buffers {
 		dataLen := buffer.Len()
 		if dataLen == 0 {
@@ -704,11 +710,6 @@ func (w *packetVectorisedWriter) WriteVectorised(buffers []*buf.Buffer) error {
 			}
 		} else {
 			payloadLimit = framePayloadStep
-		}
-		if dataLen > payloadLimit {
-			buffer.Release()
-			buf.ReleaseMulti(buffers[index+1:])
-			return snell.ErrPayloadTooLarge
 		}
 		recordWriter.streamPayloadLeft = 0
 		recordWriter.lastFrameUnix = now
