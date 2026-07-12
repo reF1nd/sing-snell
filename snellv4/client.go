@@ -281,7 +281,11 @@ func (c *clientConn) CloseWrite() error {
 				return
 			}
 		}
-		c.closeWriteErr = c.writer.WriteZeroChunk()
+		if c.client.reuse {
+			c.closeWriteErr = c.writer.WriteZeroChunk()
+		} else {
+			c.closeWriteErr = N.CloseWrite(c.Conn)
+		}
 	})
 	return c.closeWriteErr
 }

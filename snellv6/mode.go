@@ -38,4 +38,7 @@ func (m Mode) String() string {
 	}
 }
 
-const maxPayload = 0xffff
+const (
+	maxShapedPayload = 0x3fff
+	maxPayload       = 0xffff
+)

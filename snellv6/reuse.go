@@ -717,7 +717,7 @@ func (s *serverReuseSession[U]) Serve(ctx context.Context, source M.Socksaddr, o
 			}
 			s.writer = packetConn.writer
 			record.Release()
-			firstPacket := buf.NewPacket()
+			firstPacket := buf.NewSize(maxPayload)
 			firstDestination, err := packetConn.ReadPacket(firstPacket)
 			if err != nil {
 				firstPacket.Release()

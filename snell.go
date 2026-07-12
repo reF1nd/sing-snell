@@ -44,15 +44,16 @@ const (
 )
 
 var (
-	ErrBadVersion         = E.New("snell: bad header version")
-	ErrReservedNonZero    = E.New("snell: reserved header octet is non-zero")
-	ErrPayloadTooLarge    = E.New("snell: payload length exceeds maximum")
-	ErrUnsupportedCommand = E.New("snell: unsupported command")
-	ErrUnexpectedReply    = E.New("snell: unexpected reply opcode")
-	ErrMissingPSK         = E.New("snell: missing pre-shared key")
-	ErrNoUsers            = E.New("snell: no users")
-	ErrBadUserKey         = E.New("snell: bad user key")
-	ErrDuplicateUserKey   = E.New("snell: duplicate user key")
+	ErrBadVersion            = E.New("snell: bad header version")
+	ErrReservedNonZero       = E.New("snell: reserved header octet is non-zero")
+	ErrPayloadTooLarge       = E.New("snell: payload length exceeds maximum")
+	ErrUnsupportedCommand    = E.New("snell: unsupported command")
+	ErrUnexpectedReply       = E.New("snell: unexpected reply opcode")
+	ErrEmptyDomainUDPPayload = E.New("snell: empty UDP payload is not allowed for a domain destination")
+	ErrMissingPSK            = E.New("snell: missing pre-shared key")
+	ErrNoUsers               = E.New("snell: no users")
+	ErrBadUserKey            = E.New("snell: bad user key")
+	ErrDuplicateUserKey      = E.New("snell: duplicate user key")
 )
 
 type MultiUserAuthentication uint8

@@ -5,9 +5,11 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	snell "github.com/sagernet/sing-snell"
 	"github.com/sagernet/sing-snell/internal/reuse"
+	"github.com/sagernet/sing-snell/internal/uot"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -253,9 +255,12 @@ type serverPacketConn struct {
 	service         *Service
 	reader          reuse.RecordReader
 	readWaitOptions N.ReadWaitOptions
+	readAccess      sync.Mutex
 
 	writeAccess sync.Mutex
 	writer      reuse.RecordWriter
+
+	clientFIN uot.ClientFINWaiter
 }
 
 func (c *serverPacketConn) responseAddrLen(source M.Socksaddr) int {
@@ -263,6 +268,8 @@ func (c *serverPacketConn) responseAddrLen(source M.Socksaddr) int {
 }
 
 func (c *serverPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
+	c.readAccess.Lock()
+	defer c.readAccess.Unlock()
 	record, err := c.reader.NextRecord()
 	if err != nil {
 		return M.Socksaddr{}, err
@@ -419,12 +426,16 @@ func (c *serverPacketConn) Upstream() any {
 }
 
 func (c *serverPacketConn) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
+	c.readAccess.Lock()
+	defer c.readAccess.Unlock()
 	c.readWaitOptions = options
 	c.reader.InitializeReadWaiter(options)
 	return false
 }
 
 func (c *serverPacketConn) WaitReadPacket() (*buf.Buffer, M.Socksaddr, error) {
+	c.readAccess.Lock()
+	defer c.readAccess.Unlock()
 	record, err := c.reader.WaitReadBuffer()
 	if err != nil {
 		return nil, M.Socksaddr{}, err
@@ -444,6 +455,35 @@ func (c *serverPacketConn) WaitReadPacket() (*buf.Buffer, M.Socksaddr, error) {
 		return nil, M.Socksaddr{}, err
 	}
 	return record, destination, nil
+}
+
+func (c *serverPacketConn) Close() error {
+	return c.clientFIN.Close(c.Conn, c.waitClientFIN)
+}
+
+func (c *serverPacketConn) waitClientFIN(deadline time.Time) {
+	c.readAccess.Lock()
+	_ = c.Conn.SetReadDeadline(deadline)
+	for {
+		record, err := c.reader.NextRecord()
+		if err != nil {
+			break
+		}
+		record.Release()
+	}
+	c.readAccess.Unlock()
+}
+
+func (c *serverPacketConn) SetDeadline(deadline time.Time) error {
+	return c.clientFIN.SetDeadline(c.Conn, deadline)
+}
+
+func (c *serverPacketConn) SetReadDeadline(deadline time.Time) error {
+	return c.clientFIN.SetReadDeadline(c.Conn, deadline)
+}
+
+func (c *serverPacketConn) SetWriteDeadline(deadline time.Time) error {
+	return c.Conn.SetWriteDeadline(deadline)
 }
 
 var (
