@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	snell "github.com/sagernet/sing-snell"
@@ -134,4 +135,46 @@ func TestV6ConcurrentUserUpdatesAndAuthentication(t *testing.T) {
 		require.Contains(t, []int{0, 1}, <-handler.users)
 	}
 	require.NoError(t, <-updateDone)
+}
+
+type connectionTypeHandler struct {
+	types chan string
+}
+
+func (h connectionTypeHandler) NewConnectionEx(_ context.Context, conn net.Conn, _ M.Socksaddr, _ M.Socksaddr, _ N.CloseHandlerFunc) {
+	h.types <- fmt.Sprintf("%T", conn)
+	_ = conn.Close()
+}
+
+func (connectionTypeHandler) NewPacketConnectionEx(context.Context, N.PacketConn, M.Socksaddr, M.Socksaddr, N.CloseHandlerFunc) {
+}
+
+func TestV4ClientCommandFollowsReuse(t *testing.T) {
+	for _, reuseEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reuse-%t", reuseEnabled), func(t *testing.T) {
+			psk := []byte("test-password")
+			handler := connectionTypeHandler{types: make(chan string, 1)}
+			service, err := snellv5.NewService(snellv5.ServiceOptions{PSK: psk, Handler: handler})
+			require.NoError(t, err)
+			client, err := snellv4.NewClient(snellv4.ClientOptions{PSK: psk, Reuse: reuseEnabled})
+			require.NoError(t, err)
+			clientRaw, serverRaw := net.Pipe()
+			defer clientRaw.Close()
+			defer serverRaw.Close()
+			go func() {
+				_ = service.NewConnection(context.Background(), serverRaw, M.ParseSocksaddr("127.0.0.1:10000"), nil)
+			}()
+			proxyConn, err := client.DialConn(clientRaw, M.ParseSocksaddr("example.com:443"))
+			require.NoError(t, err)
+			connectionType := <-handler.types
+			if reuseEnabled {
+				require.True(t, strings.Contains(connectionType, "serverReuseConn"), connectionType)
+			} else {
+				require.True(t, strings.HasSuffix(connectionType, ".serverConn"), connectionType)
+			}
+			_ = proxyConn.Close()
+			_ = clientRaw.Close()
+			_ = serverRaw.Close()
+		})
+	}
 }
