@@ -1,6 +1,7 @@
 package snellv4
 
 import (
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -97,9 +98,7 @@ type clientConn struct {
 }
 
 func (c *clientConn) writeRequest(payload []byte) error {
-	// Surge 6.7.0 (11520): SNConnectorV4::targetHandshakeData: writes command 5 for v4/v5 TCP
-	// handshakes even when connector reuse is disabled.
-	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	requestPayload := snell.Request{Command: c.command(), ClientID: c.client.userKey, Destination: c.destination}
 	request := buf.NewSize(requestPayload.Len() + len(payload))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -125,7 +124,7 @@ func (c *clientConn) writeRequest(payload []byte) error {
 }
 
 func (c *clientConn) writeRequestBuffer(buffer *buf.Buffer) error {
-	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	requestPayload := snell.Request{Command: c.command(), ClientID: c.client.userKey, Destination: c.destination}
 	request := buf.With(buffer.ExtendHeader(requestPayload.Len()))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -152,7 +151,15 @@ func (c *clientConn) readResponseLocked() error {
 	if err := c.ensureRequest(); err != nil {
 		return err
 	}
-	recordReader := &reader{upstream: eof.UnexpectedReader{Reader: c.Conn}, psk: c.client.psk}
+	var (
+		upstream      io.Reader = eof.UnexpectedReader{Reader: c.Conn}
+		connectReader *commandConnectReader
+	)
+	if c.command() == snell.CommandConnect {
+		connectReader = &commandConnectReader{Conn: c.Conn}
+		upstream = connectReader
+	}
+	recordReader := &reader{upstream: upstream, psk: c.client.psk}
 	recordReader.InitializeReadWaiter(c.readWaitOptions)
 	record, err := recordReader.ReadRecord()
 	if err != nil {
@@ -164,6 +171,9 @@ func (c *clientConn) readResponseLocked() error {
 	}
 	if cached != nil {
 		recordReader.SetCache(cached)
+	}
+	if connectReader != nil {
+		connectReader.replyRead.Store(true)
 	}
 	c.reader = recordReader
 	c.readerReady.Store(true)
@@ -312,8 +322,35 @@ func (c *clientConn) CreateReadWaiter() (N.ReadWaiter, bool) {
 }
 
 func (c *clientConn) FrontHeadroom() int {
-	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	requestPayload := snell.Request{Command: c.command(), ClientID: c.client.userKey, Destination: c.destination}
 	return requestPayload.Len() + snell.SaltLen + snell.HeaderCipherLen + maxInitialPaddingLen
+}
+
+func (c *clientConn) command() byte {
+	if c.client.reuse {
+		return snell.CommandConnectV2
+	}
+	return snell.CommandConnect
+}
+
+// commandConnectReader reports EOF before the reply as truncation. snell-server
+// v5.0.1 ends command-1 tunnels by closing the connection instead of writing a
+// zero chunk, so EOF after the reply is the end of the stream.
+type commandConnectReader struct {
+	net.Conn
+	replyRead atomic.Bool
+}
+
+func (r *commandConnectReader) Read(p []byte) (int, error) {
+	n, err := r.Conn.Read(p)
+	if !r.replyRead.Load() {
+		err = eof.Unexpected(err)
+	}
+	return n, err
+}
+
+func (r *commandConnectReader) Upstream() any {
+	return r.Conn
 }
 
 func (c *clientConn) RearHeadroom() int {
