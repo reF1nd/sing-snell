@@ -96,9 +96,7 @@ type clientConn struct {
 }
 
 func (c *clientConn) writeRequest(payload []byte) error {
-	// Surge 6.7.0 (11520): SNConnectorV4::targetHandshakeData: writes command 5 for v4/v5 TCP
-	// handshakes even when connector reuse is disabled.
-	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	requestPayload := snell.Request{Command: c.command(), ClientID: c.client.userKey, Destination: c.destination}
 	request := buf.NewSize(requestPayload.Len() + len(payload))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -124,7 +122,7 @@ func (c *clientConn) writeRequest(payload []byte) error {
 }
 
 func (c *clientConn) writeRequestBuffer(buffer *buf.Buffer) error {
-	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	requestPayload := snell.Request{Command: c.command(), ClientID: c.client.userKey, Destination: c.destination}
 	request := buf.With(buffer.ExtendHeader(requestPayload.Len()))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -315,8 +313,15 @@ func (c *clientConn) CreateReadWaiter() (N.ReadWaiter, bool) {
 }
 
 func (c *clientConn) FrontHeadroom() int {
-	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	requestPayload := snell.Request{Command: c.command(), ClientID: c.client.userKey, Destination: c.destination}
 	return requestPayload.Len() + snell.SaltLen + snell.HeaderCipherLen + maxInitialPaddingLen
+}
+
+func (c *clientConn) command() byte {
+	if c.client.reuse {
+		return snell.CommandConnectV2
+	}
+	return snell.CommandConnect
 }
 
 func (c *clientConn) RearHeadroom() int {
