@@ -200,10 +200,7 @@ func (s *reuseSession) Close() error {
 }
 
 func (s *reuseSession) startDrain() {
-	if s.closeIdle() {
-		s.Close()
-		return
-	}
+	// Close already checked the idle policy and consumed any keep-once exemption.
 	if !s.state.CompareAndSwap(uint32(reuse.StateActive), uint32(reuse.StateWaiting)) {
 		if reuse.State(s.state.Load()) != reuse.StateClosed {
 			s.Close()
