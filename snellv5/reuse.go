@@ -177,7 +177,7 @@ type serverReuseConn[U comparable] struct {
 	closeWriteErr  error
 	closeOnce      sync.Once
 	closeErr       error
-	readClosed     atomic.Bool
+	readClosed     atomic.Bool // EOF belongs to this logical connection, not the shared reader.
 	aborted        atomic.Bool
 	replyWritten   bool
 	writeClosed    bool
@@ -309,6 +309,9 @@ func (c *serverReuseConn[U]) writeErrorResponse(code byte, messageText string) e
 }
 
 func (c *serverReuseConn[U]) Read(p []byte) (int, error) {
+	if c.readClosed.Load() {
+		return 0, io.EOF
+	}
 	n, err := c.session.reader.Read(p)
 	if errors.Is(err, io.EOF) {
 		c.readClosed.Store(true)
@@ -317,6 +320,9 @@ func (c *serverReuseConn[U]) Read(p []byte) (int, error) {
 }
 
 func (c *serverReuseConn[U]) ReadBuffer(buffer *buf.Buffer) error {
+	if c.readClosed.Load() {
+		return io.EOF
+	}
 	err := c.session.reader.ReadBuffer(buffer)
 	if errors.Is(err, io.EOF) {
 		c.readClosed.Store(true)
@@ -435,6 +441,9 @@ func (c *serverReuseConn[U]) InitializeReadWaiter(options N.ReadWaitOptions) (ne
 }
 
 func (c *serverReuseConn[U]) WaitReadBuffer() (*buf.Buffer, error) {
+	if c.readClosed.Load() {
+		return nil, io.EOF
+	}
 	buffer, err := c.session.reader.WaitReadBuffer()
 	if errors.Is(err, io.EOF) {
 		c.readClosed.Store(true)

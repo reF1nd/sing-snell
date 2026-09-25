@@ -291,7 +291,7 @@ type reuseConn struct {
 	readWaitOptions N.ReadWaitOptions
 	closed          atomic.Bool
 	readActionCount atomic.Int32
-	readClosed      atomic.Bool
+	readClosed      atomic.Bool // EOF belongs to this logical connection, not the shared reader.
 }
 
 func (c *reuseConn) readResponse() error {
@@ -364,6 +364,9 @@ func (c *reuseConn) Read(p []byte) (int, error) {
 	if c.closed.Load() {
 		return 0, net.ErrClosed
 	}
+	if c.readClosed.Load() {
+		return 0, io.EOF
+	}
 	err := c.readResponse()
 	if err != nil {
 		return 0, err
@@ -403,6 +406,9 @@ func (c *reuseConn) ReadBuffer(buffer *buf.Buffer) error {
 	defer c.readActionCount.Add(-1)
 	if c.closed.Load() {
 		return net.ErrClosed
+	}
+	if c.readClosed.Load() {
+		return io.EOF
 	}
 	err := c.readResponse()
 	if err != nil {
@@ -597,6 +603,9 @@ func (w *reuseReadWaiter) WaitReadBuffer() (*buf.Buffer, error) {
 	defer w.conn.readActionCount.Add(-1)
 	if w.conn.closed.Load() {
 		return nil, net.ErrClosed
+	}
+	if w.conn.readClosed.Load() {
+		return nil, io.EOF
 	}
 	err := w.conn.readResponse()
 	if err != nil {
@@ -821,7 +830,7 @@ type serverReuseConn[U comparable] struct {
 	closeWriteErr  error
 	closeOnce      sync.Once
 	closeErr       error
-	readClosed     atomic.Bool
+	readClosed     atomic.Bool // EOF belongs to this logical connection, not the shared reader.
 	aborted        atomic.Bool
 	replyWritten   bool
 	writeClosed    bool
@@ -896,6 +905,9 @@ func (c *serverReuseConn[U]) writeErrorResponse() error {
 }
 
 func (c *serverReuseConn[U]) Read(p []byte) (int, error) {
+	if c.readClosed.Load() {
+		return 0, io.EOF
+	}
 	n, err := c.session.reader.Read(p)
 	if errors.Is(err, io.EOF) {
 		c.readClosed.Store(true)
@@ -904,6 +916,9 @@ func (c *serverReuseConn[U]) Read(p []byte) (int, error) {
 }
 
 func (c *serverReuseConn[U]) ReadBuffer(buffer *buf.Buffer) error {
+	if c.readClosed.Load() {
+		return io.EOF
+	}
 	err := c.session.reader.ReadBuffer(buffer)
 	if errors.Is(err, io.EOF) {
 		c.readClosed.Store(true)
@@ -1023,6 +1038,9 @@ func (c *serverReuseConn[U]) InitializeReadWaiter(options N.ReadWaitOptions) (ne
 }
 
 func (c *serverReuseConn[U]) WaitReadBuffer() (*buf.Buffer, error) {
+	if c.readClosed.Load() {
+		return nil, io.EOF
+	}
 	buffer, err := c.session.reader.WaitReadBuffer()
 	if errors.Is(err, io.EOF) {
 		c.readClosed.Store(true)
