@@ -5,6 +5,7 @@ import (
 
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
+	F "github.com/sagernet/sing/common/format"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
@@ -79,6 +80,22 @@ func ReadRequest(reader io.Reader) (Request, error) {
 	return request, nil
 }
 
+// ServerResponseError is an error reply received from a Snell server.
+type ServerResponseError struct {
+	Code    byte
+	Message string
+}
+
+func (e *ServerResponseError) Error() string {
+	return F.ToString("snell: server error ", e.Code, ": ", e.Message)
+}
+
+// IsRemoteEOF identifies the server closing a connection before sending a reply.
+// This remains a protocol error, not io.EOF or a successful stream completion.
+func (e *ServerResponseError) IsRemoteEOF() bool {
+	return e.Code == 0x65 && e.Message == "Remote EOF"
+}
+
 func ReadServerError(record *buf.Buffer) error {
 	errorCode, err := record.ReadByte()
 	if err != nil {
@@ -93,5 +110,5 @@ func ReadServerError(record *buf.Buffer) error {
 	if !record.IsEmpty() {
 		return E.New("snell: server error reply has trailing data")
 	}
-	return E.New("snell: server error ", errorCode, ": ", message)
+	return &ServerResponseError{Code: errorCode, Message: message}
 }
