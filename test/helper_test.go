@@ -51,3 +51,21 @@ func startUDPEcho(t *testing.T) uint16 {
 	}()
 	return uint16(packetConn.LocalAddr().(*net.UDPAddr).Port)
 }
+
+// tcpPipe returns a connected loopback TCP pair. Unlike net.Pipe, writes are
+// buffered, so a v6 client can pipeline its first datagram while the server
+// is still writing the tunnel reply.
+func tcpPipe(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+	clientConn, err := net.Dial("tcp", listener.Addr().String())
+	require.NoError(t, err)
+	serverConn, err := listener.Accept()
+	if err != nil {
+		clientConn.Close()
+	}
+	require.NoError(t, err)
+	return clientConn, serverConn
+}

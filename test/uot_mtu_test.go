@@ -134,7 +134,7 @@ func testV6UoTAdvertisesRC1PacketMTU(
 	serve func(context.Context, net.Conn, M.Socksaddr, N.CloseHandlerFunc) error,
 ) {
 	t.Helper()
-	clientRaw, serverRaw := net.Pipe()
+	clientRaw, serverRaw := tcpPipe(t)
 	t.Cleanup(func() {
 		clientRaw.Close()
 		serverRaw.Close()
@@ -329,7 +329,7 @@ func testV6UoTServerWaitsForClientFIN(t *testing.T, mode snellv6.Mode) {
 	client, err := snellv6.NewClient(snellv6.ClientOptions{PSK: psk, Mode: mode})
 	require.NoError(t, err)
 
-	clientRaw, serverPipe := net.Pipe()
+	clientRaw, serverPipe := tcpPipe(t)
 	serverRaw := &closeNotifyConn{Conn: serverPipe, closed: make(chan struct{})}
 	t.Cleanup(func() {
 		clientRaw.Close()
@@ -667,7 +667,7 @@ func testUoTLargeDatagram(
 	serve func(net.Conn) error,
 ) {
 	t.Helper()
-	clientRaw, serverRaw := net.Pipe()
+	clientRaw, serverRaw := tcpPipe(t)
 	t.Cleanup(func() {
 		clientRaw.Close()
 		serverRaw.Close()

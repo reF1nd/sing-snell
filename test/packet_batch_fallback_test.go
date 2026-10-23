@@ -38,7 +38,9 @@ func TestPacketBatchFallbackCopy(t *testing.T) {
 			require.NoError(t, err)
 			service, err := snellv6.NewService(snellv6.ServerOptions{PSK: []byte("test-password"), Mode: mode, Handler: handler})
 			require.NoError(t, err)
-			testPacketBatchFallbackCopy(t, handler, client.DialPacketConn, service.NewConnection, false)
+			// The v6 client pipelines its first datagram behind the tunnel request,
+			// which needs a buffered transport while the server writes its reply.
+			testPacketBatchFallbackCopy(t, handler, client.DialPacketConn, service.NewConnection, true)
 		})
 	}
 }

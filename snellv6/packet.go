@@ -88,12 +88,10 @@ func (c *clientPacketConn) readReply() (reuse.RecordReader, error) {
 }
 
 func (c *clientPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	// v6 servers read the first datagram from the record after the tunnel
+	// command, so datagrams follow the command without waiting for the reply;
+	// a rejected tunnel surfaces on the next read instead.
 	err := c.writeRequest()
-	if err != nil {
-		buffer.Release()
-		return err
-	}
-	_, err = c.readReply()
 	if err != nil {
 		buffer.Release()
 		return err
@@ -137,12 +135,6 @@ func (w *clientPacketBatchWriter) WritePacketBatch(buffers []*buf.Buffer, destin
 	w.access.Lock()
 	if w.writer == nil {
 		err := w.conn.writeRequest()
-		if err != nil {
-			w.access.Unlock()
-			buf.ReleaseMulti(buffers)
-			return err
-		}
-		_, err = w.conn.readReply()
 		if err != nil {
 			w.access.Unlock()
 			buf.ReleaseMulti(buffers)
