@@ -199,7 +199,7 @@ func testServerUDPDomainResponseLoopback(
 ) {
 	t.Helper()
 
-	clientConn, serverConn := net.Pipe()
+	clientConn, serverConn := tcpPipe(t)
 	defer clientConn.Close()
 
 	serverErr := make(chan error, 1)
